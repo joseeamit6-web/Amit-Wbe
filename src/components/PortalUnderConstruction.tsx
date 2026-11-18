@@ -11,7 +11,7 @@ export interface PortalUnderConstructionProps {
 export function PortalUnderConstruction({
   heading = 'Amit Joshi Portal',
   statusText = 'UNDER CONSTRUCTION',
-  subtitle = 'ARCHITECTING THE DIGITAL EVOLUTION',
+  subtitle = 'WILL BE LIVE SOON',
   showSimulationIndicator = true,
   className = '',
 }: PortalUnderConstructionProps) {

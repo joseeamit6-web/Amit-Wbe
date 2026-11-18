@@ -27,6 +27,19 @@ interface HexToken {
   alpha: number;
 }
 
+interface PulseRipple {
+  x: number;
+  y: number;
+  createdAt: number;
+  maxRadius: number;
+}
+
+interface TrailPoint {
+  x: number;
+  y: number;
+  createdAt: number;
+}
+
 const HEX_CHARS = '0123456789ABCDEF';
 
 function randomHexPair(): string {
@@ -64,20 +77,34 @@ export function CyberScannerBackground() {
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
     let animationFrameId = 0;
 
+    // Cursor tracking state (interpolated for silky motion across the entire viewport)
+    const pointer = {
+      targetX: width * 0.5,
+      targetY: height * 0.5,
+      x: width * 0.5,
+      y: height * 0.5,
+      active: false,
+      intensity: 0,
+      lastMoveAt: 0,
+    };
+
+    const ripples: PulseRipple[] = [];
+    const trail: TrailPoint[] = [];
+
     // Seed particles
-    const particleCount = 38;
+    const particleCount = 42;
     const particles: Particle[] = Array.from({ length: particleCount }, () => ({
       x: Math.random() * width,
       y: Math.random() * height,
       vx: (Math.random() - 0.5) * 0.18,
       vy: -0.08 - Math.random() * 0.22,
-      radius: 0.7 + Math.random() * 1.1,
+      radius: 0.7 + Math.random() * 1.15,
       alpha: 0.12 + Math.random() * 0.24,
       phase: Math.random() * Math.PI * 2,
     }));
 
-    // Seed network nodes (kept subtle)
-    const nodeCount = 24;
+    // Seed network nodes
+    const nodeCount = 26;
     const nodes: NetworkNode[] = Array.from({ length: nodeCount }, () => ({
       x: Math.random() * width,
       y: Math.random() * height,
@@ -87,7 +114,7 @@ export function CyberScannerBackground() {
       pulseOffset: Math.random() * Math.PI * 2,
     }));
 
-    // Seed sparse perimeter/outer-band hexadecimal characters (never crowding center text)
+    // Seed sparse perimeter/outer-band hexadecimal characters
     const hexAnchors: Array<[number, number]> = [
       [0.08, 0.14],
       [0.21, 0.11],
@@ -124,6 +151,50 @@ export function CyberScannerBackground() {
 
     resize();
 
+    const handlePointerMove = (e: PointerEvent) => {
+      const now = performance.now();
+      pointer.targetX = e.clientX;
+      pointer.targetY = e.clientY;
+      if (!pointer.active) {
+        pointer.x = e.clientX;
+        pointer.y = e.clientY;
+      }
+      pointer.active = true;
+      pointer.lastMoveAt = now;
+
+      if (!prefersReducedMotion) {
+        const lastTrail = trail[trail.length - 1];
+        if (!lastTrail || Math.hypot(e.clientX - lastTrail.x, e.clientY - lastTrail.y) > 10) {
+          trail.push({ x: e.clientX, y: e.clientY, createdAt: now });
+          if (trail.length > 22) {
+            trail.shift();
+          }
+        }
+      }
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      if (prefersReducedMotion) return;
+      pointer.targetX = e.clientX;
+      pointer.targetY = e.clientY;
+      pointer.active = true;
+      pointer.lastMoveAt = performance.now();
+
+      ripples.push({
+        x: e.clientX,
+        y: e.clientY,
+        createdAt: performance.now(),
+        maxRadius: Math.min(width, height) * 0.28 + 80,
+      });
+      if (ripples.length > 6) {
+        ripples.shift();
+      }
+    };
+
+    const handlePointerLeave = () => {
+      pointer.active = false;
+    };
+
     const handleMotionChange = (event: MediaQueryListEvent) => {
       prefersReducedMotion = event.matches;
       if (prefersReducedMotion) {
@@ -134,6 +205,10 @@ export function CyberScannerBackground() {
       }
     };
 
+    window.addEventListener('pointermove', handlePointerMove, { passive: true });
+    window.addEventListener('pointerdown', handlePointerDown, { passive: true });
+    document.addEventListener('mouseleave', handlePointerLeave);
+    window.addEventListener('blur', handlePointerLeave);
     mediaQuery.addEventListener('change', handleMotionChange);
     window.addEventListener('resize', resize);
 
@@ -143,16 +218,49 @@ export function CyberScannerBackground() {
       const t = isStatic ? 3200 : now;
       ctx.clearRect(0, 0, width, height);
 
+      // Smoothly interpolate cursor coordinates and visibility
+      if (!isStatic) {
+        pointer.x += (pointer.targetX - pointer.x) * 0.16;
+        pointer.y += (pointer.targetY - pointer.y) * 0.16;
+        const targetIntensity = pointer.active ? 1 : 0;
+        pointer.intensity += (targetIntensity - pointer.intensity) * 0.08;
+      } else {
+        pointer.intensity = 0;
+      }
+
       const cx = width * 0.5;
       const cy = height * 0.5;
+      const cursorAlpha = pointer.intensity;
 
-      // 1. Subtle digital grid with radial falloff + scan illumination
+      // 0. Subtle cursor radial ambient glow across the background
+      if (cursorAlpha > 0.01) {
+        const cursorGlowRadius = 210;
+        const cGrad = ctx.createRadialGradient(
+          pointer.x,
+          pointer.y,
+          0,
+          pointer.x,
+          pointer.y,
+          cursorGlowRadius
+        );
+        cGrad.addColorStop(0, `rgba(0, 229, 255, ${(0.085 * cursorAlpha).toFixed(4)})`);
+        cGrad.addColorStop(0.45, `rgba(0, 200, 240, ${(0.03 * cursorAlpha).toFixed(4)})`);
+        cGrad.addColorStop(1, 'rgba(0, 200, 240, 0)');
+        ctx.fillStyle = cGrad;
+        ctx.fillRect(
+          pointer.x - cursorGlowRadius,
+          pointer.y - cursorGlowRadius,
+          cursorGlowRadius * 2,
+          cursorGlowRadius * 2
+        );
+      }
+
+      // 1. Subtle digital grid with radial falloff + scan & cursor illumination
       const gridSize = width < 640 ? 44 : 60;
       const scanPeriodMs = 9500;
       const scanProgress = (t % scanPeriodMs) / scanPeriodMs;
       const beamY = -120 + scanProgress * (height + 240);
 
-      // Secondary slow counter-scanning line
       const subScanProgress = ((t + 4200) % 13000) / 13000;
       const subBeamY = height + 60 - subScanProgress * (height + 120);
 
@@ -162,7 +270,10 @@ export function CyberScannerBackground() {
       for (let x = (width % gridSize) / 2; x < width; x += gridSize) {
         const dx = Math.abs(x - cx) / (width * 0.52);
         const edgeFade = Math.max(0.08, 1 - dx * dx * 0.9);
-        ctx.strokeStyle = `rgba(0, 215, 255, ${(0.036 * edgeFade).toFixed(4)})`;
+        const nearCursorX =
+          cursorAlpha > 0.01 ? Math.max(0, 1 - Math.abs(x - pointer.x) / 150) * cursorAlpha : 0;
+        const lineAlpha = 0.036 * edgeFade + nearCursorX * 0.055;
+        ctx.strokeStyle = `rgba(0, 215, 255, ${lineAlpha.toFixed(4)})`;
         ctx.beginPath();
         ctx.moveTo(x + 0.5, 0);
         ctx.lineTo(x + 0.5, height);
@@ -173,7 +284,9 @@ export function CyberScannerBackground() {
         const dy = Math.abs(y - cy) / (height * 0.55);
         const edgeFade = Math.max(0.08, 1 - dy * dy * 0.9);
         const nearBeam = Math.max(0, 1 - Math.abs(y - beamY) / 90);
-        const lineAlpha = 0.032 * edgeFade + nearBeam * 0.045;
+        const nearCursorY =
+          cursorAlpha > 0.01 ? Math.max(0, 1 - Math.abs(y - pointer.y) / 150) * cursorAlpha : 0;
+        const lineAlpha = 0.032 * edgeFade + nearBeam * 0.045 + nearCursorY * 0.055;
         ctx.strokeStyle = `rgba(0, 225, 255, ${lineAlpha.toFixed(4)})`;
         ctx.beginPath();
         ctx.moveTo(0, y + 0.5);
@@ -181,17 +294,25 @@ export function CyberScannerBackground() {
         ctx.stroke();
       }
 
-      // Highlight subtle grid intersection crosshairs near the active scan beam
+      // Highlight grid intersections near the active scan beam OR near the cursor
       for (let x = (width % gridSize) / 2; x < width; x += gridSize) {
         for (let y = (height % gridSize) / 2; y < height; y += gridSize) {
           const distToBeam = Math.abs(y - beamY);
+          const distToCursor =
+            cursorAlpha > 0.01 ? Math.hypot(x - pointer.x, y - pointer.y) : Infinity;
+
+          let intensity = 0;
           if (distToBeam < 75) {
             const distFromCenter = Math.hypot(x - cx, y - cy) / maxDist;
-            const intensity = (1 - distToBeam / 75) * (1 - distFromCenter * 0.65);
-            if (intensity > 0.05) {
-              ctx.fillStyle = `rgba(0, 235, 255, ${(intensity * 0.28).toFixed(4)})`;
-              ctx.fillRect(x - 0.5, y - 0.5, 2, 2);
-            }
+            intensity += (1 - distToBeam / 75) * (1 - distFromCenter * 0.65) * 0.28;
+          }
+          if (distToCursor < 170) {
+            intensity += (1 - distToCursor / 170) * 0.42 * cursorAlpha;
+          }
+
+          if (intensity > 0.04) {
+            ctx.fillStyle = `rgba(34, 235, 255, ${Math.min(0.55, intensity).toFixed(4)})`;
+            ctx.fillRect(x - 0.75, y - 0.75, 2.2, 2.2);
           }
         }
       }
@@ -214,7 +335,6 @@ export function CyberScannerBackground() {
       });
       ctx.setLineDash([]);
 
-      // Expanding subtle pulse wave from center
       const pulseCycle = (t % 6800) / 6800;
       const pulseRadius = radarRadius * (0.18 + pulseCycle * 0.92);
       const pulseAlpha = (1 - pulseCycle) * 0.06;
@@ -226,9 +346,8 @@ export function CyberScannerBackground() {
         ctx.stroke();
       }
 
-      // Rotating radar sweep arc
       const radarAngle = (t * 0.00042) % (Math.PI * 2);
-      const wedgeSpan = 0.65; // radians (~37 deg)
+      const wedgeSpan = 0.65;
       const sweepSteps = 14;
       for (let i = 0; i < sweepSteps; i++) {
         const startA = radarAngle - (wedgeSpan * (i + 1)) / sweepSteps;
@@ -242,7 +361,6 @@ export function CyberScannerBackground() {
         ctx.fill();
       }
 
-      // Thin radar sweep leading vector
       ctx.strokeStyle = 'rgba(0, 235, 255, 0.11)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -253,10 +371,24 @@ export function CyberScannerBackground() {
       );
       ctx.stroke();
 
-      // 3. Animated network connection points
+      // 3. Animated network connection points (+ cursor magnetic filaments)
       const linkDist = width < 640 ? 115 : 165;
+      const cursorLinkDist = width < 640 ? 140 : 195;
+
       if (!isStatic) {
         for (const node of nodes) {
+          // Subtle cursor field deflection when pointer passes very close
+          if (cursorAlpha > 0.05) {
+            const dx = node.x - pointer.x;
+            const dy = node.y - pointer.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 1 && d < 120) {
+              const push = ((120 - d) / 120) * 0.12 * cursorAlpha;
+              node.x += (dx / d) * push;
+              node.y += (dy / d) * push;
+            }
+          }
+
           node.x += node.vx;
           node.y += node.vy;
           if (node.x < 0 || node.x > width) node.vx *= -1;
@@ -266,7 +398,6 @@ export function CyberScannerBackground() {
 
       for (let i = 0; i < nodes.length; i++) {
         const a = nodes[i];
-        // Dampen opacity right behind central headline band so text stays crisp
         const inCenterBand =
           Math.abs(a.x - cx) < Math.min(width * 0.34, 420) &&
           Math.abs(a.y - cy) < 110;
@@ -286,18 +417,49 @@ export function CyberScannerBackground() {
           }
         }
 
+        // Connect node to cursor when cursor reaches nearby
+        let cursorBoost = 0;
+        if (cursorAlpha > 0.01) {
+          const dCursor = Math.hypot(a.x - pointer.x, a.y - pointer.y);
+          if (dCursor < cursorLinkDist) {
+            cursorBoost = 1 - dCursor / cursorLinkDist;
+            const filamentAlpha = cursorBoost * 0.24 * cursorAlpha * (inCenterBand ? 0.55 : 1);
+            ctx.strokeStyle = `rgba(34, 235, 255, ${filamentAlpha.toFixed(4)})`;
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(pointer.x, pointer.y);
+            ctx.stroke();
+          }
+        }
+
         const beamBoost = Math.max(0, 1 - Math.abs(a.y - beamY) / 85);
         const nodePulse = 0.5 + 0.5 * Math.sin(t * 0.002 + a.pulseOffset);
-        const nodeAlpha = (0.1 + nodePulse * 0.08 + beamBoost * 0.16) * centerScale;
-        ctx.fillStyle = `rgba(34, 211, 238, ${nodeAlpha.toFixed(4)})`;
+        const nodeAlpha =
+          (0.1 + nodePulse * 0.08 + beamBoost * 0.16 + cursorBoost * 0.32 * cursorAlpha) *
+          centerScale;
+        ctx.fillStyle = `rgba(34, 211, 238, ${Math.min(0.65, nodeAlpha).toFixed(4)})`;
         ctx.beginPath();
-        ctx.arc(a.x, a.y, a.radius, 0, Math.PI * 2);
+        ctx.arc(a.x, a.y, a.radius + cursorBoost * 0.8 * cursorAlpha, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // 4. Small floating digital particles
+      // 4. Small floating digital particles (+ gentle cursor shimmer & drift)
       for (const p of particles) {
+        let cursorParticleBoost = 0;
         if (!isStatic) {
+          if (cursorAlpha > 0.05) {
+            const dx = p.x - pointer.x;
+            const dy = p.y - pointer.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 1 && d < 140) {
+              cursorParticleBoost = 1 - d / 140;
+              const swirl = cursorParticleBoost * 0.35 * cursorAlpha;
+              p.x += (dx / d) * swirl - (dy / d) * swirl * 0.45;
+              p.y += (dy / d) * swirl + (dx / d) * swirl * 0.45;
+            }
+          }
+
           p.x += p.vx;
           p.y += p.vy;
           if (p.y < -10) {
@@ -308,9 +470,13 @@ export function CyberScannerBackground() {
           if (p.x > width + 10) p.x = -10;
         }
         const shimmer = 0.65 + 0.35 * Math.sin(t * 0.0024 + p.phase);
-        ctx.fillStyle = `rgba(103, 232, 249, ${(p.alpha * shimmer).toFixed(4)})`;
+        const pAlpha = Math.min(
+          0.65,
+          p.alpha * shimmer + cursorParticleBoost * 0.28 * cursorAlpha
+        );
+        ctx.fillStyle = `rgba(103, 232, 249, ${pAlpha.toFixed(4)})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, p.radius + cursorParticleBoost * 0.55 * cursorAlpha, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -319,19 +485,22 @@ export function CyberScannerBackground() {
       ctx.textBaseline = 'middle';
 
       for (const token of hexTokens) {
-        if (!isStatic && t > token.nextChangeAt) {
+        const tx = token.xRatio * width;
+        const ty = token.yRatio * height;
+        const nearCursor =
+          cursorAlpha > 0.05 ? Math.max(0, 1 - Math.hypot(tx - pointer.x, ty - pointer.y) / 140) : 0;
+
+        if (!isStatic && (t > token.nextChangeAt || (nearCursor > 0.45 && Math.random() < 0.08))) {
           token.text = generateHexToken();
           token.nextChangeAt = t + 1400 + Math.random() * 2600;
         }
-        const tx = token.xRatio * width;
-        const ty = token.yRatio * height;
+
         const beamGlow = Math.max(0, 1 - Math.abs(ty - beamY) / 80);
-        const alpha = token.alpha + beamGlow * 0.14;
-        ctx.fillStyle = `rgba(34, 211, 238, ${alpha.toFixed(4)})`;
+        const alpha = token.alpha + beamGlow * 0.14 + nearCursor * 0.24 * cursorAlpha;
+        ctx.fillStyle = `rgba(34, 211, 238, ${Math.min(0.45, alpha).toFixed(4)})`;
         ctx.fillText(token.text, tx, ty);
       }
 
-      // Faint technical coordinates along outer perimeter (desktop/tablet)
       if (width >= 640) {
         ctx.font = '9.5px "JetBrains Mono", ui-monospace, monospace';
         ctx.fillStyle = 'rgba(148, 197, 214, 0.16)';
@@ -341,7 +510,95 @@ export function CyberScannerBackground() {
         ctx.fillText('GRID 01 // SEC-04', 28, height - 26);
       }
 
-      // 6. Moving horizontal neon-cyan scanning beam
+      // 6. Cursor trail, precision scanner reticle, and click sonar ripples
+      if (!isStatic) {
+        // Fade out old trail points
+        while (trail.length > 0 && now - trail[0].createdAt > 520) {
+          trail.shift();
+        }
+        if (trail.length > 1 && cursorAlpha > 0.02) {
+          for (let i = 1; i < trail.length; i++) {
+            const p0 = trail[i - 1];
+            const p1 = trail[i];
+            const age = (now - p1.createdAt) / 520;
+            const segAlpha = Math.max(0, 1 - age) * 0.18 * cursorAlpha;
+            ctx.strokeStyle = `rgba(34, 229, 255, ${segAlpha.toFixed(4)})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.stroke();
+          }
+        }
+
+        // Precision HUD scanner reticle following cursor smoothly
+        if (cursorAlpha > 0.02) {
+          const rot = t * 0.0014;
+          const rOuter = 24;
+          const rInner = 9;
+
+          ctx.save();
+          ctx.translate(pointer.x, pointer.y);
+
+          // Faint rotating dashed outer ring
+          ctx.rotate(rot);
+          ctx.strokeStyle = `rgba(34, 229, 255, ${(0.22 * cursorAlpha).toFixed(4)})`;
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 6]);
+          ctx.beginPath();
+          ctx.arc(0, 0, rOuter, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Counter-rotating subtle arc ticks
+          ctx.rotate(-rot * 2);
+          ctx.strokeStyle = `rgba(103, 240, 255, ${(0.3 * cursorAlpha).toFixed(4)})`;
+          for (let k = 0; k < 4; k++) {
+            const a = (k * Math.PI) / 2;
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(a) * (rOuter - 4), Math.sin(a) * (rOuter - 4));
+            ctx.lineTo(Math.cos(a) * (rOuter + 3), Math.sin(a) * (rOuter + 3));
+            ctx.stroke();
+          }
+
+          ctx.restore();
+
+          // Inner fine crosshair & coordinate readout
+          ctx.strokeStyle = `rgba(34, 229, 255, ${(0.2 * cursorAlpha).toFixed(4)})`;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(pointer.x, pointer.y, rInner, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.font = '8.5px "JetBrains Mono", ui-monospace, monospace';
+          ctx.fillStyle = `rgba(103, 232, 249, ${(0.26 * cursorAlpha).toFixed(4)})`;
+          const rx = Math.round(pointer.x).toString().padStart(4, '0');
+          const ry = Math.round(pointer.y).toString().padStart(4, '0');
+          const labelX = pointer.x + 30 > width - 95 ? pointer.x - 98 : pointer.x + 28;
+          const labelY = pointer.y + 20 > height - 20 ? pointer.y - 18 : pointer.y + 18;
+          ctx.fillText(`X:${rx} Y:${ry}`, labelX, labelY);
+        }
+
+        // Click / tap expanding sonar pulses
+        for (let i = ripples.length - 1; i >= 0; i--) {
+          const rip = ripples[i];
+          const progress = (now - rip.createdAt) / 1100;
+          if (progress >= 1) {
+            ripples.splice(i, 1);
+            continue;
+          }
+          const eased = 1 - Math.pow(1 - progress, 3);
+          const radius = 8 + eased * rip.maxRadius;
+          const rAlpha = (1 - progress) * 0.32;
+          ctx.strokeStyle = `rgba(34, 235, 255, ${rAlpha.toFixed(4)})`;
+          ctx.lineWidth = 1.25;
+          ctx.beginPath();
+          ctx.arc(rip.x, rip.y, radius, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // 7. Moving horizontal neon-cyan scanning beam
       const beamHeight = 135;
       const beamGrad = ctx.createLinearGradient(0, beamY - beamHeight, 0, beamY + 12);
       beamGrad.addColorStop(0, 'rgba(0, 229, 255, 0)');
@@ -351,7 +608,6 @@ export function CyberScannerBackground() {
       ctx.fillStyle = beamGrad;
       ctx.fillRect(0, beamY - beamHeight, width, beamHeight + 12);
 
-      // Razor-sharp glowing leading edge of the horizontal scan beam
       const lineGrad = ctx.createLinearGradient(0, 0, width, 0);
       lineGrad.addColorStop(0, 'rgba(0, 235, 255, 0.02)');
       lineGrad.addColorStop(0.2, 'rgba(0, 235, 255, 0.22)');
@@ -365,7 +621,6 @@ export function CyberScannerBackground() {
       ctx.lineTo(width, beamY + 0.5);
       ctx.stroke();
 
-      // Slowly moving secondary subtle horizontal scanning line
       ctx.strokeStyle = 'rgba(0, 229, 255, 0.075)';
       ctx.lineWidth = 1;
       ctx.beginPath();
@@ -387,6 +642,10 @@ export function CyberScannerBackground() {
 
     return () => {
       cancelAnimationFrame(animationFrameId);
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('mouseleave', handlePointerLeave);
+      window.removeEventListener('blur', handlePointerLeave);
       mediaQuery.removeEventListener('change', handleMotionChange);
       window.removeEventListener('resize', resize);
     };
